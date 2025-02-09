@@ -76,7 +76,7 @@ import BS.thread_pool;
 static_assert(BS::thread_pool_module, "The flag BS::thread_pool_module is set to false, but the library was imported as a module. Aborting compilation.");
 static_assert(BS::thread_pool_version == BS::version(BS_THREAD_POOL_TEST_VERSION), "The versions of BS_thread_pool_test.cpp and the BS.thread_pool module do not match. Aborting compilation.");
 #else
-    #include "BS_thread_pool.hpp"
+    #include "../include/BS_thread_pool.hpp"
 static_assert(!BS::thread_pool_module, "The flag BS::thread_pool_module is set to true, but the library was not imported as a module. Aborting compilation.");
 static_assert(BS::thread_pool_version == BS::version(BS_THREAD_POOL_TEST_VERSION), "The versions of BS_thread_pool_test.cpp and BS_thread_pool.hpp do not match. Aborting compilation.");
 #endif
@@ -3129,6 +3129,17 @@ private:
 }; // class timer
 
 /**
+ * @brief Prints the wall idle time of the  thread pool.
+ *
+ * @param pool The thread pool.
+ */
+void print_idle_time(const BS::thread_pool<>& pool)
+{
+    const double idle_time_seconds = pool.get_wall_idle_time();
+    sync_out.println("Wall idle time: ", idle_time_seconds, " seconds");
+}
+
+/**
  * @brief Benchmark multithreaded performance by calculating the Mandelbrot set.
  *
  * @param benchmark Whether to perform the full benchmarks.
@@ -3276,6 +3287,8 @@ void check_performance(const bool benchmark, const bool plot, const bool save)
             }
         }
         print_speedup(different_n_timings, try_tasks);
+        print_idle_time(pool);
+
     }
 
     if (plot)
