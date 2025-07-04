@@ -1498,6 +1498,19 @@ public:
     }
 
     /**
+     * @brief Get the total amount of time that the threads have been idle.
+     *
+     * @return The total idle time in seconds.
+     */
+    [[nodiscard]] double get_wall_idle_time() const
+    {
+        const std::unique_lock tasks_lock(tasks_mutex);
+        const double count = static_cast<double>(thread_count);
+        const double total_idle_time = static_cast<double>(idle_time) * 1.0e-9;
+        return total_idle_time / count;
+    }
+
+    /**
      * @brief Check whether the pool is currently paused. Only enabled if the flag `BS:tp::pause` is enabled in the template parameter.
      *
      * @return `true` if the pool is paused, `false` if it is not paused.
@@ -1573,6 +1586,7 @@ public:
             paused = true;
             tasks_lock.unlock();
             reset_pool(num_threads, std::forward<F>(init));
+            idle_time = 0;
             tasks_lock.lock();
             paused = was_paused;
         }
@@ -1997,6 +2011,8 @@ private:
         this_thread::my_pool = this;
         this_thread::my_index = idx;
         init_func(idx);
+        std::chrono::steady_clock::time_point begin;
+        std::chrono::steady_clock::time_point end;
         while (true)
         {
             std::unique_lock tasks_lock(tasks_mutex);
@@ -2011,6 +2027,7 @@ private:
                 if (waiting && (tasks_running == 0) && tasks.empty())
                     tasks_done_cv.notify_all();
             }
+            begin = std::chrono::steady_clock::now(); // time, thread goes into sleeping mode
             task_available_cv.wait(tasks_lock BS_THREAD_POOL_WAIT_TOKEN,
                 [this]
                 {
@@ -2019,8 +2036,12 @@ private:
                     else
                         return !tasks.empty() BS_THREAD_POOL_OR_STOP_CONDITION;
                 });
+            end = std::chrono::steady_clock::now(); // time, thread wakes up
+            add_on_idle_time(begin, end); // add time to idle time
+
             if (BS_THREAD_POOL_STOP_CONDITION)
                 break;
+
             {
                 task_t task = pop_task(); // NOLINT(misc-const-correctness) In C++23 this cannot be const since `std::move_only_function::operator()` is not a const member function.
                 ++tasks_running;
@@ -2041,6 +2062,15 @@ private:
         cleanup_func(idx);
         this_thread::my_index = std::nullopt;
         this_thread::my_pool = std::nullopt;
+    }
+
+    /**
+     * @brief Given a begin and end time stamp, calculate the time difference and add it the total idle time.
+     */
+    void add_on_idle_time(const std::chrono::steady_clock::time_point &begin, const std::chrono::steady_clock::time_point &end)
+    {
+        const long long idle_duration_ns = std::chrono::duration_cast<std::chrono::nanoseconds>(end - begin).count();
+        idle_time += idle_duration_ns;
     }
 
     // ============
@@ -2113,6 +2143,11 @@ private:
      */
     bool workers_running = false;
 #endif
+
+    /**
+     * @brief The total time that threads have been idle (nanoseconds).
+     */
+    long long idle_time{0}; // total idle time that threads have been in sleeping mode (nanoseconds)
 }; // class thread_pool
 
 /**
