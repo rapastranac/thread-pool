@@ -1445,6 +1445,21 @@ void check_wait()
 }
 
 /**
+ * @brief Check that get_wall_idle_time() counts threads that are still asleep, not only threads that already woke up.
+ */
+void check_wall_idle_time()
+{
+    constexpr std::chrono::milliseconds sleep_time(200);
+    BS::thread_pool pool(2);
+    pool.wait();
+    const double idle_before = pool.get_wall_idle_time();
+    std::this_thread::sleep_for(sleep_time);
+    const double idle_after = pool.get_wall_idle_time();
+    logln("Idle time grew by ", idle_after - idle_before, " seconds while every thread slept for at least ", sleep_time.count(), " ms.");
+    check(idle_after - idle_before >= 0.15);
+}
+
+/**
  * @brief Check that wait() correctly blocks all external threads that call it.
  */
 void check_wait_blocks()
@@ -4100,6 +4115,9 @@ int main(int argc, char* argv[]) // NOLINT(bugprone-exception-escape)
 
             print_header("Checking submission of different callable types:");
             check_callables();
+
+            print_header("Checking get_wall_idle_time():");
+            check_wall_idle_time();
 
             print_header("Checking wait(), wait_for(), and wait_until():");
             check_wait();
