@@ -1460,6 +1460,53 @@ void check_wall_idle_time()
 }
 
 /**
+ * @brief Check that idle time with no task running is counted as starved, not imbalanced.
+ */
+void check_wall_starved_idle_time()
+{
+    constexpr std::chrono::milliseconds sleep_time(200);
+    BS::thread_pool pool(2);
+    pool.wait();
+    const double starved_before = pool.get_wall_starved_idle_time();
+    const double imbalanced_before = pool.get_wall_imbalanced_idle_time();
+    std::this_thread::sleep_for(sleep_time);
+    const double starved_after = pool.get_wall_starved_idle_time();
+    const double imbalanced_after = pool.get_wall_imbalanced_idle_time();
+    logln("Starved idle time grew by ", starved_after - starved_before, " seconds and imbalanced idle time by ", imbalanced_after - imbalanced_before, " seconds with no task running for at least ", sleep_time.count(), " ms.");
+    check(starved_after - starved_before >= 0.15);
+    check(imbalanced_after == imbalanced_before);
+}
+
+/**
+ * @brief Check that idle time while another thread runs a task is counted as imbalanced, not starved.
+ */
+void check_wall_imbalanced_idle_time()
+{
+    constexpr std::chrono::milliseconds sleep_time(200);
+    BS::thread_pool pool(4);
+    pool.wait();
+    binary_semaphore task_started(0);
+    binary_semaphore task_released(0);
+    pool.detach_task(
+        [&task_started, &task_released]
+        {
+            task_started.release();
+            task_released.acquire();
+        });
+    task_started.acquire();
+    const double starved_before = pool.get_wall_starved_idle_time();
+    const double imbalanced_before = pool.get_wall_imbalanced_idle_time();
+    std::this_thread::sleep_for(sleep_time);
+    const double starved_after = pool.get_wall_starved_idle_time();
+    const double imbalanced_after = pool.get_wall_imbalanced_idle_time();
+    task_released.release();
+    pool.wait();
+    logln("Imbalanced idle time grew by ", imbalanced_after - imbalanced_before, " seconds and starved idle time by ", starved_after - starved_before, " seconds while 3 of 4 threads slept next to a running task for at least ", sleep_time.count(), " ms.");
+    check(imbalanced_after - imbalanced_before >= 0.1);
+    check(starved_after == starved_before);
+}
+
+/**
  * @brief Check that wait() correctly blocks all external threads that call it.
  */
 void check_wait_blocks()
@@ -4116,8 +4163,10 @@ int main(int argc, char* argv[]) // NOLINT(bugprone-exception-escape)
             print_header("Checking submission of different callable types:");
             check_callables();
 
-            print_header("Checking get_wall_idle_time():");
+            print_header("Checking get_wall_idle_time() and its starved/imbalanced split:");
             check_wall_idle_time();
+            check_wall_starved_idle_time();
+            check_wall_imbalanced_idle_time();
 
             print_header("Checking wait(), wait_for(), and wait_until():");
             check_wait();
