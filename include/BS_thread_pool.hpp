@@ -1708,17 +1708,36 @@ public:
     }
 
     /**
-     * @brief Get the total amount of time that the threads have been idle, including threads that are still asleep.
+     * @brief Get the total amount of time that the threads have been idle, including threads that are still asleep. This is the sum of `get_wall_starved_idle_time()` and `get_wall_imbalanced_idle_time()`.
      *
      * @return The total idle time in seconds, divided by the number of threads.
      */
     [[nodiscard]] double get_wall_idle_time() const
     {
         const std::unique_lock tasks_lock(tasks_mutex);
-        const long long ongoing_idle_ns = static_cast<long long>(sleeping_threads) * std::chrono::duration_cast<std::chrono::nanoseconds>(std::chrono::steady_clock::now() - idle_last_change).count();
-        const double count = static_cast<double>(thread_count);
-        const double total_idle_time = static_cast<double>(idle_time + ongoing_idle_ns) * 1.0e-9;
-        return total_idle_time / count;
+        return idle_seconds_per_thread(starved_idle_time + imbalanced_idle_time + ongoing_idle_time());
+    }
+
+    /**
+     * @brief Get the amount of time that the threads have been idle while no task was running in the pool, including threads that are still asleep.
+     *
+     * @return The starved idle time in seconds, divided by the number of threads.
+     */
+    [[nodiscard]] double get_wall_starved_idle_time() const
+    {
+        const std::unique_lock tasks_lock(tasks_mutex);
+        return idle_seconds_per_thread(starved_idle_time + (tasks_running == 0 ? ongoing_idle_time() : 0));
+    }
+
+    /**
+     * @brief Get the amount of time that the threads have been idle while other threads were running tasks, including threads that are still asleep.
+     *
+     * @return The imbalanced idle time in seconds, divided by the number of threads.
+     */
+    [[nodiscard]] double get_wall_imbalanced_idle_time() const
+    {
+        const std::unique_lock tasks_lock(tasks_mutex);
+        return idle_seconds_per_thread(imbalanced_idle_time + (tasks_running == 0 ? 0 : ongoing_idle_time()));
     }
 
     /**
@@ -1798,7 +1817,8 @@ public:
             tasks_lock.unlock();
             reset_pool(num_threads, std::forward<F>(init));
             tasks_lock.lock();
-            idle_time = 0;
+            starved_idle_time = 0;
+            imbalanced_idle_time = 0;
             idle_last_change = std::chrono::steady_clock::now();
             paused = was_paused;
             tasks_lock.unlock();
@@ -2304,6 +2324,7 @@ private:
         while (true)
         {
             std::unique_lock tasks_lock(tasks_mutex);
+            accrue_idle_time();
             --tasks_running;
             if constexpr (pause_enabled)
             {
@@ -2315,7 +2336,6 @@ private:
                 if (waiting && (tasks_running == 0) && tasks.empty())
                     tasks_done_cv.notify_all();
             }
-            accrue_idle_time();
             ++sleeping_threads;
             task_available_cv.wait(tasks_lock BS_THREAD_POOL_WAIT_TOKEN,
                 [this]
@@ -2354,13 +2374,42 @@ private:
     }
 
     /**
-     * @brief Add the time every sleeping thread spent asleep since the last change to the total idle time. Must be called with `tasks_mutex` held, right before `sleeping_threads` changes.
+     * @brief Add the time every sleeping thread spent asleep since the last change to the starved idle time if no task was running, or to the imbalanced idle time otherwise. Must be called with `tasks_mutex` held, right before `sleeping_threads` or `tasks_running` changes.
      */
     void accrue_idle_time()
     {
         const std::chrono::steady_clock::time_point now = std::chrono::steady_clock::now();
-        idle_time += static_cast<long long>(sleeping_threads) * std::chrono::duration_cast<std::chrono::nanoseconds>(now - idle_last_change).count();
+        const long long idle_ns = static_cast<long long>(sleeping_threads) * std::chrono::duration_cast<std::chrono::nanoseconds>(now - idle_last_change).count();
+        if (tasks_running == 0)
+        {
+            starved_idle_time += idle_ns;
+        }
+        else
+        {
+            imbalanced_idle_time += idle_ns;
+        }
         idle_last_change = now;
+    }
+
+    /**
+     * @brief Get the time every sleeping thread has spent asleep since the last change, not yet added to the idle times. Must be called with `tasks_mutex` held.
+     *
+     * @return The ongoing idle time in nanoseconds, summed over the sleeping threads.
+     */
+    [[nodiscard]] long long ongoing_idle_time() const
+    {
+        return static_cast<long long>(sleeping_threads) * std::chrono::duration_cast<std::chrono::nanoseconds>(std::chrono::steady_clock::now() - idle_last_change).count();
+    }
+
+    /**
+     * @brief Convert an idle time summed over the threads to seconds per thread.
+     *
+     * @param idle_ns The idle time in nanoseconds, summed over the threads.
+     * @return The idle time in seconds, divided by the number of threads.
+     */
+    [[nodiscard]] double idle_seconds_per_thread(const long long idle_ns) const
+    {
+        return static_cast<double>(idle_ns) * 1.0e-9 / static_cast<double>(thread_count);
     }
 
     // ============
@@ -2435,9 +2484,14 @@ private:
 #endif
 
     /**
-     * @brief The total time that threads have been idle (nanoseconds).
+     * @brief The total time that threads have been idle while no task was running (nanoseconds).
      */
-    long long idle_time{0}; // total idle time that threads have been in sleeping mode (nanoseconds)
+    long long starved_idle_time{0};
+
+    /**
+     * @brief The total time that threads have been idle while other threads were running tasks (nanoseconds).
+     */
+    long long imbalanced_idle_time{0};
 
     /**
      * @brief The number of threads currently asleep, waiting for a task.
@@ -2445,7 +2499,7 @@ private:
     std::size_t sleeping_threads = 0;
 
     /**
-     * @brief When `idle_time` was last brought up to date.
+     * @brief When the idle times were last brought up to date.
      */
     std::chrono::steady_clock::time_point idle_last_change = std::chrono::steady_clock::now();
 }; // class thread_pool
